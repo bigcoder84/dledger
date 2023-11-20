@@ -42,33 +42,89 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 基于Raft协议的Leader选举类
+ */
 public class DLedgerLeaderElector {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DLedgerLeaderElector.class);
 
+    /**
+     * 随机数生成器，对应Raft协议中选举超时时间，是一个随机数
+     */
     private final Random random = new Random();
+    /**
+     * 配置参数
+     */
     private final DLedgerConfig dLedgerConfig;
+    /**
+     * 节点状态机
+     */
     private final MemberState memberState;
+    /**
+     * RPC服务，实现向集群内的节点发送心跳包、投票的RPC
+     */
     private final DLedgerRpcService dLedgerRpcService;
 
     //as a server handler
     //record the last leader state
+    /**
+     * 上次收到心跳包的时间戳
+     */
     private volatile long lastLeaderHeartBeatTime = -1;
+    /**
+     * 上次发送心跳包的时间戳
+     */
     private volatile long lastSendHeartBeatTime = -1;
+    /**
+     * 上次成功收到心跳包的时间戳
+     */
     private volatile long lastSuccHeartBeatTime = -1;
+    /**
+     * 一个心跳包的周期，默认为2s
+     */
     private int heartBeatTimeIntervalMs = 2000;
+    /**
+     * 允许最大的n个心跳周期内未收到心
+     * 跳包，状态为Follower的节点只有超过maxHeartBeatLeak *
+     * heartBeatTimeIntervalMs的时间内未收到主节点的心跳包，才会重新
+     * 进入Candidate状态，进行下一轮选举。
+     */
     private int maxHeartBeatLeak = 3;
     //as a client
+    /**
+     * 下一次可发起投票的时间，如果当前时间小于该值，说明计时器未过期，此时无须发起投票
+     */
     private long nextTimeToRequestVote = -1;
+    /**
+     * 是否应该立即发起投票。
+     * 如果为true，则忽略计时器，该值默认为false。作用是在从节点
+     * 收到主节点的心跳包，并且当前状态机的轮次大于主节点轮次（说明
+     * 集群中Leader的投票轮次小于从节点的轮次）时，立即发起新的投票
+     * 请求
+     */
     private volatile boolean needIncreaseTermImmediately = false;
+    /**
+     * 最小的发送投票间隔时间，默认为300ms
+     */
     private int minVoteIntervalMs = 300;
+    /**
+     * 最大的发送投票间隔时间，默认为1000ms。
+     */
     private int maxVoteIntervalMs = 1000;
-
+    /**
+     * 注册的节点状态处理器，通过addRoleChangeHandler方法添加
+     */
     private final List<RoleChangeHandler> roleChangeHandlers = new ArrayList<>();
 
     private VoteResponse.ParseResult lastParseResult = VoteResponse.ParseResult.WAIT_TO_REVOTE;
+    /**
+     * 上一次投票的开销
+     */
     private long lastVoteCost = 0L;
-
+    /**
+     * 状态机管理器
+     */
     private final StateMaintainer stateMaintainer;
 
     private final TakeLeadershipTask takeLeadershipTask = new TakeLeadershipTask();
@@ -83,8 +139,14 @@ public class DLedgerLeaderElector {
     }
 
     public void startup() {
+        /**
+         * stateMaintainer是Leader选举内部维护的状态机，即维护节
+         * 点状态在Follower、Candidate、Leader之间转换，需要先调用其
+         * start()方法启动状态机。
+         */
         stateMaintainer.start();
         for (RoleChangeHandler roleChangeHandler : roleChangeHandlers) {
+            // 依次启动注册的角色转换监听器，即内部状态机的状态发生变更后的事件监听器，是Leader选举的功能扩展点
             roleChangeHandler.startup();
         }
     }
@@ -403,11 +465,15 @@ public class DLedgerLeaderElector {
 
     private void maintainAsCandidate() throws Exception {
         //for candidate
+        // 下一次可发起投票的时间，如果当前时间小于该值，说明计时器未过期，此时无须发起投票
         if (System.currentTimeMillis() < nextTimeToRequestVote && !needIncreaseTermImmediately) {
             return;
         }
+        // 投票轮次
         long term;
+        // Leader节点当前的投票轮次。
         long ledgerEndTerm;
+        // 当前日志的最大序列，即下一条日志的开始index
         long ledgerEndIndex;
         if (!memberState.isCandidate()) {
             return;
@@ -546,11 +612,15 @@ public class DLedgerLeaderElector {
      * @throws Exception
      */
     private void maintainState() throws Exception {
+        // 如果是leader状态
         if (memberState.isLeader()) {
+            // leader状态、主节点，该状态下需要定时向从节点发送心跳包，用于传播数据、确保其领导地位
             maintainAsLeader();
         } else if (memberState.isFollower()) {
+            // follower状态，该状态下会开启定时器，尝试进入Candidate状态，以便发起投票选举，一旦收到主节点的心跳包，则重置定时器
             maintainAsFollower();
         } else {
+            // Candidate（候选者）状态，该状态下的节点会发起投票，尝试选择自己为主节点，选举成功后，不会存在该状态下的节点
             maintainAsCandidate();
         }
     }
@@ -711,6 +781,7 @@ public class DLedgerLeaderElector {
         @Override
         public void doWork() {
             try {
+                // 如果当前节点参与Leader选举，则调用maintainState()方法驱动状态机，并且每一次驱动状态机后休息10ms
                 if (DLedgerLeaderElector.this.dLedgerConfig.isEnableLeaderElector()) {
                     DLedgerLeaderElector.this.refreshIntervals(dLedgerConfig);
                     DLedgerLeaderElector.this.maintainState();

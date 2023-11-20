@@ -22,6 +22,9 @@ import io.openmessaging.storage.dledger.protocol.protocol.DLedgerProtocol;
 import io.openmessaging.storage.dledger.protocol.userdefine.UserDefineRequest;
 import io.openmessaging.storage.dledger.protocol.userdefine.UserDefineResponse;
 
+/**
+ * DLedger节点之前的网络通信，默认基于Netty实现，默认实现类为DLedgerRpcNettyService
+ */
 public abstract class DLedgerRpcService implements DLedgerProtocol, DLedgerRpcProtocolHandler {
 
     public abstract void startup();

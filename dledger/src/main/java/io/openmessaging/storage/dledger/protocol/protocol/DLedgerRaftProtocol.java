@@ -31,14 +31,44 @@ import java.util.concurrent.CompletableFuture;
 
 public interface DLedgerRaftProtocol {
 
+    /**
+     * 发起投票请求
+     * @param request
+     * @return
+     * @throws Exception
+     */
     CompletableFuture<VoteResponse> vote(VoteRequest request) throws Exception;
 
+    /**
+     * Leader节点向从节点发送心跳包。
+     * @param request
+     * @return
+     * @throws Exception
+     */
     CompletableFuture<HeartBeatResponse> heartBeat(HeartBeatRequest request) throws Exception;
 
+    /**
+     * 拉取日志条目
+     * @param request
+     * @return
+     * @throws Exception
+     */
     CompletableFuture<PullEntriesResponse> pull(PullEntriesRequest request) throws Exception;
 
+    /**
+     * 推送日志条目，用于日志传播
+     * @param request
+     * @return
+     * @throws Exception
+     */
     CompletableFuture<PushEntryResponse> push(PushEntryRequest request) throws Exception;
 
+    /**
+     * DLedger客户端协议处理器
+     * @param request
+     * @return
+     * @throws Exception
+     */
     CompletableFuture<InstallSnapshotResponse> installSnapshot(InstallSnapshotRequest request) throws Exception;
 
 }

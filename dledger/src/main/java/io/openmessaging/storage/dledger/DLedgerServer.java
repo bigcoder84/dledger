@@ -86,6 +86,9 @@ import org.slf4j.LoggerFactory;
 
 import static io.openmessaging.storage.dledger.metrics.DLedgerMetricsConstant.LABEL_READ_MODE;
 
+/**
+ * 基于Raft协议的集群内节点的封装类
+ */
 public class DLedgerServer extends AbstractDLedgerServer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DLedgerServer.class);

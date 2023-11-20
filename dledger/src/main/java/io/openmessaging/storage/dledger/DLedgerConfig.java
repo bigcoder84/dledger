@@ -26,6 +26,9 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * 主从切换模块相关的配置信息
+ */
 public class DLedgerConfig {
 
     public static final String MEMORY = "MEMORY";
