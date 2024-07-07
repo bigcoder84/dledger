@@ -19,18 +19,50 @@ package io.openmessaging.storage.dledger.store;
 import io.openmessaging.storage.dledger.MemberState;
 import io.openmessaging.storage.dledger.entry.DLedgerEntry;
 
+/**
+ * 存储抽象类
+ */
 public abstract class DLedgerStore {
 
+    /**
+     * 获取节点状态机
+     * @return
+     */
     public abstract MemberState getMemberState();
 
+    /**
+     * 向主节点追加日志（数据）
+     * @param entry
+     * @return
+     */
     public abstract DLedgerEntry appendAsLeader(DLedgerEntry entry);
 
+    /**
+     * 向从节点广播日志（数据）
+     * @param entry
+     * @param leaderTerm
+     * @param leaderId
+     * @return
+     */
     public abstract DLedgerEntry appendAsFollower(DLedgerEntry entry, long leaderTerm, String leaderId);
 
+    /**
+     * 根据日志下标查找日志
+     * @param index
+     * @return
+     */
     public abstract DLedgerEntry get(Long index);
 
+    /**
+     * 获取Leader节点当前最大的投票轮次
+     * @return
+     */
     public abstract long getLedgerEndTerm();
 
+    /**
+     * 获取Leader节点下一条日志写入的日志序号
+     * @return
+     */
     public abstract long getLedgerEndIndex();
 
     public abstract long getLedgerBeforeBeginIndex();
@@ -45,6 +77,13 @@ public abstract class DLedgerStore {
 
     public abstract void flush();
 
+    /**
+     * 删除日志
+     * @param entry
+     * @param leaderTerm
+     * @param leaderId
+     * @return
+     */
     public long truncate(DLedgerEntry entry, long leaderTerm, String leaderId) {
         return -1;
     }
@@ -68,6 +107,12 @@ public abstract class DLedgerStore {
 
     public abstract void updateIndexAfterLoadingSnapshot(long lastIncludedIndex, long lastIncludedTerm);
 
+    /**
+     * 从endIndex开始，向前追溯targetTerm任期的第一个日志
+     * @param targetTerm
+     * @param endIndex
+     * @return
+     */
     public abstract DLedgerEntry getFirstLogOfTargetTerm(long targetTerm, long endIndex);
 
     public abstract void startup();

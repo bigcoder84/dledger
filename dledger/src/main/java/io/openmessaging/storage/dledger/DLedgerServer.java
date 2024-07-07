@@ -298,11 +298,16 @@ public class DLedgerServer extends AbstractDLedgerServer {
     @Override
     public CompletableFuture<AppendEntryResponse> handleAppend(AppendEntryRequest request) throws IOException {
         try {
+            // 如果请求目的节点不是当前节点，返回错误
             PreConditions.check(memberState.getSelfId().equals(request.getRemoteId()), DLedgerResponseCode.UNKNOWN_MEMBER, "%s != %s", request.getRemoteId(), memberState.getSelfId());
+            // 如果请求的集群不是当前节点所在的集群，则返回错误
             PreConditions.check(memberState.getGroup().equals(request.getGroup()), DLedgerResponseCode.UNKNOWN_GROUP, "%s != %s", request.getGroup(), memberState.getGroup());
+            // 如果当前节点不是leader节点，则抛出异常
             PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER);
             PreConditions.check(memberState.getTransferee() == null, DLedgerResponseCode.LEADER_TRANSFERRING);
             long currTerm = memberState.currTerm();
+            // 消息的追加是一个异步的过程，会将内容暂存到内存队列中。首先检查内存队列是否已满，如果已满则向客户端返回错误码，表示本次发送失败。如果未满，
+            // 则先将数据追加到Leader节点的PageCache中，然后转发到Leader的所有从节点，最后Leader节点等待从节点日志复制结果。
             if (dLedgerEntryPusher.isPendingFull(currTerm)) {
                 AppendEntryResponse appendEntryResponse = new AppendEntryResponse();
                 appendEntryResponse.setGroup(memberState.getGroup());
@@ -318,8 +323,10 @@ public class DLedgerServer extends AbstractDLedgerServer {
                     throw new DLedgerException(DLedgerResponseCode.REQUEST_WITH_EMPTY_BODYS, "BatchAppendEntryRequest" +
                         " with empty bodys");
                 }
+                // 将消息追加到Leader节点中
                 future = appendAsLeader(batchRequest.getBatchMsgs());
             } else {
+                // 将消息追加到Leader节点中
                 future = appendAsLeader(request.getBody());
             }
             return future;
@@ -338,7 +345,9 @@ public class DLedgerServer extends AbstractDLedgerServer {
     }
 
     public AppendFuture<AppendEntryResponse> appendAsLeader(List<byte[]> bodies) throws DLedgerException {
+        // 判断当前节点是否是Leader，如果不是则报错
         PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER);
+        // 消息不能为空
         if (bodies.size() == 0) {
             return AppendFuture.newCompletedFuture(-1, null);
         }
@@ -361,6 +370,7 @@ public class DLedgerServer extends AbstractDLedgerServer {
             DLedgerEntry dLedgerEntry = new DLedgerEntry();
             totalBytes += bodies.get(0).length;
             dLedgerEntry.setBody(bodies.get(0));
+            // 底层调用 appendAsLeader 追加日志
             entry = dLedgerStore.appendAsLeader(dLedgerEntry);
             future = new AppendFuture<>();
         }

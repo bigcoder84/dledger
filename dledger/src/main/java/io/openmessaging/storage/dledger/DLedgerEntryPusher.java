@@ -64,25 +64,48 @@ import org.slf4j.LoggerFactory;
 
 import static io.openmessaging.storage.dledger.metrics.DLedgerMetricsConstant.LABEL_REMOTE_ID;
 
+/**
+ * 日志复制由该类实现
+ */
 public class DLedgerEntryPusher {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DLedgerEntryPusher.class);
 
+    /**
+     * 多副本相关配置。
+     */
     private final DLedgerConfig dLedgerConfig;
+    /**
+     * 存储实现类。
+     */
     private final DLedgerStore dLedgerStore;
-
+    /**
+     * 节点状态机。
+     */
     private final MemberState memberState;
-
+    /**
+     * RPC 服务实现类，用于集群内的其他节点进行网络通讯。
+     */
     private final DLedgerRpcService dLedgerRpcService;
 
+    /**
+     * 每个节点基于投票轮次的当前水位线标记。
+     */
     private final Map<Long/*term*/, ConcurrentMap<String/*peer id*/, Long/*match index*/>> peerWaterMarksByTerm = new ConcurrentHashMap<>();
 
     private final Map<Long/*term*/, ConcurrentMap<Long/*index*/, Closure/*upper callback*/>> pendingClosure = new ConcurrentHashMap<>();
 
+    /**
+     * 从节点上开启的线程，用于接收主节点的 push 请求（append、commit）。
+     */
     private final EntryHandler entryHandler;
-
+    /**
+     * 日志追加ACK投票仲裁线程，用于判断日志是否可提交，当前节点为主节点时激活
+     */
     private final QuorumAckChecker quorumAckChecker;
-
+    /**
+     * 日志请求转发器，负责向从节点转发日志，主节点为每一个从节点构建一个EntryDispatcher，EntryDispatcher是一个线程
+     */
     private final Map<String/*peer id*/, EntryDispatcher/*entry dispatcher for each peer*/> dispatcherMap = new HashMap<>();
 
     private final String selfId;
@@ -106,7 +129,9 @@ public class DLedgerEntryPusher {
     }
 
     public void startup() {
+        // 启动 EntryHandler
         entryHandler.start();
+        //
         quorumAckChecker.start();
         for (EntryDispatcher dispatcher : dispatcherMap.values()) {
             dispatcher.start();
@@ -168,8 +193,15 @@ public class DLedgerEntryPusher {
         }
     }
 
+    /**
+     * 判断队列是否已满
+     *
+     * @param currTerm
+     * @return
+     */
     public boolean isPendingFull(long currTerm) {
         checkTermForPendingMap(currTerm, "isPendingFull");
+        // 每一个投票轮次积压的日志数量默认不超过10000条，可通过配置改变该值
         return pendingClosure.get(currTerm).size() > dLedgerConfig.getMaxPendingRequestsNum();
     }
 
@@ -256,6 +288,7 @@ public class DLedgerEntryPusher {
     }
 
     /**
+     * Leader节点对日志复制进行仲裁，如果成功存储该条目日志的节点超过半数节点，则向客户端返回写入成功。
      * This thread will check the quorum index and complete the pending requests.
      */
     private class QuorumAckChecker extends ShutdownAbleThread {
@@ -347,6 +380,13 @@ public class DLedgerEntryPusher {
     }
 
     /**
+     * 这个线程将由领导激活。这个线程将把日志条目推送给follower(由peerId标识)，并将完成推送的索引更新到索引映射。应该为每个follower生成一个线程。
+     * 推送有4个类型:
+     *  APPEND:添加条目
+     *  COMPARE:如果领导发生变化,新领导人应比较其条目
+     *  TRUNCATE:如果leader完成了一个索引的比较，leader将发送一个请求来截断follower的ledger
+     *  COMMIT:通常,领导将附加已提交索引到APPEND请求中,但是如果追加请求很少和分散,则领导将发送纯请求来通知跟随者已提交索引
+     *
      * This thread will be activated by the leader.
      * This thread will push the entry to follower(identified by peerId) and update the completed pushed index to index map.
      * Should generate a single thread for each peer.
@@ -365,12 +405,21 @@ public class DLedgerEntryPusher {
      */
     private class EntryDispatcher extends ShutdownAbleThread {
 
+        /**
+         * 向从节点发送命令的类型
+         */
         private final AtomicReference<EntryDispatcherState> type = new AtomicReference<>(EntryDispatcherState.COMPARE);
+        /**
+         * 上一次发送commit请求的时间戳。
+         */
         private long lastPushCommitTimeMs = -1;
+        /**
+         * 目标节点ID
+         */
         private final String peerId;
 
         /**
-         * the index of the next entry to push(initialized to the next of the last entry in the store)
+         * 已写入的日志序号
          */
         private long writeIndex = DLedgerEntryPusher.this.dLedgerStore.getLedgerEndIndex() + 1;
 
@@ -380,15 +429,33 @@ public class DLedgerEntryPusher {
         private long matchIndex = -1;
 
         private final int maxPendingSize = 1000;
+        /**
+         * Leader节点当前的投票轮次
+         */
         private long term = -1;
+        /**
+         * Leader节点ID
+         */
         private String leaderId = null;
+        /**
+         * 上次检测泄露的时间，所谓泄露，指的是挂起的日志请求数量超过了maxPendingSize。
+         */
         private long lastCheckLeakTimeMs = System.currentTimeMillis();
 
+        /**
+         * 记录日志的挂起时间，key表示日志的序列（entryIndex），value表示挂起时间戳。
+         */
         private final ConcurrentMap<Long/*index*/, Pair<Long/*send timestamp*/, Integer/*entries count in req*/>> pendingMap = new ConcurrentHashMap<>();
+        /**
+         * 需要批量push的日志数据
+         */
         private final PushEntryRequest batchAppendEntryRequest = new PushEntryRequest();
 
         private long lastAppendEntryRequestSendTimeMs = -1;
 
+        /**
+         * 配额。
+         */
         private final Quota quota = new Quota(dLedgerConfig.getPeerPushQuota());
 
         public EntryDispatcher(String peerId, Logger logger) {
@@ -405,9 +472,13 @@ public class DLedgerEntryPusher {
 
         private boolean checkNotLeaderAndFreshState() {
             if (!memberState.isLeader()) {
+                // 如果当前节点的状态不是Leader则直接返回。
                 return true;
             }
             if (term != memberState.currTerm() || leaderId == null || !leaderId.equals(memberState.getLeaderId())) {
+                // 如果日志转发器（EntryDispatcher）的投票轮次为空或与状态机的投票轮次不相等，
+                // 将日志转发器的term、leaderId与状态机同步，即发送compare请求。这种情况通常
+                // 是由于集群触发了重新选举，当前节点刚被选举成 Leader节点。
                 synchronized (memberState) {
                     if (!memberState.isLeader()) {
                         return true;
@@ -416,6 +487,7 @@ public class DLedgerEntryPusher {
                     logger.info("[Push-{}->{}]Update term: {} and leaderId: {} to new term: {}, new leaderId: {}", selfId, peerId, term, leaderId, memberState.currTerm(), memberState.getLeaderId());
                     term = memberState.currTerm();
                     leaderId = memberState.getSelfId();
+                    // 改变日志转发器的状态，该方法非常重要
                     changeState(EntryDispatcherState.COMPARE);
                 }
             }
@@ -544,6 +616,7 @@ public class DLedgerEntryPusher {
         @Override
         public void doWork() {
             try {
+                // 检查当前节点状态
                 if (checkNotLeaderAndFreshState()) {
                     waitForRunning(1);
                     return;
@@ -588,11 +661,13 @@ public class DLedgerEntryPusher {
                 }
                 if (dLedgerStore.getLedgerEndIndex() == -1) {
                     // now not entry in store
+                    // ledgerEndIndex== -1 表示Leader中没有存储数据，是一个新的集群，所以无需比较主从是否一致
                     break;
                 }
 
                 // compare process start from the [nextIndex -1]
                 PushEntryRequest request;
+                // compareIndex代表正在比对的索引下标，对比前一条日志，term 和 index 是否一致
                 long compareIndex = writeIndex - 1;
                 long compareTerm = -1;
                 if (compareIndex < dLedgerStore.getLedgerBeforeBeginIndex()) {
@@ -626,8 +701,12 @@ public class DLedgerEntryPusher {
 
                 // inconsistent state, need to keep comparing
                 if (response.getXTerm() != -1) {
+                    // response.getXTerm() != -1 代表从节点上的 leaderEndIndex 比当前对比的index大，但是当前对比index 所处的任期和Leader节点不一致，
+                    // 此时 response.getXIndex() 返回的是当前对比任期在从节点开始的位置
                     writeIndex = response.getXIndex();
                 } else {
+                    // response.getXTerm() == -1 代表从节点上的 leaderEndIndex 比当前对比的index小，
+                    // 则把对比指针，移到从节点末尾的 leaderEndIndex上
                     writeIndex = response.getEndIndex() + 1;
                 }
             }
@@ -686,6 +765,7 @@ public class DLedgerEntryPusher {
                     doCheckAppendResponse();
                     break;
                 }
+                // 循环同步数据至从节点，方法内部会优化，会按照配置收集一批需要发送的日志，等到到达发送阈值则一起发送，而不是一条条发送
                 long lastIndexToBeSend = doAppendInner(writeIndex);
                 if (lastIndexToBeSend == -1) {
                     break;
@@ -715,6 +795,7 @@ public class DLedgerEntryPusher {
             // check if now can trigger real send
             if (!dLedgerConfig.isEnableBatchAppend() || batchAppendEntryRequest.getTotalSize() >= dLedgerConfig.getMaxBatchAppendSize()
                 || DLedgerUtils.elapsed(this.lastAppendEntryRequestSendTimeMs) >= dLedgerConfig.getMaxBatchAppendIntervalMs()) {
+                // 开启了批量发送，并且到达了批量发送阈值
                 sendBatchAppendEntryRequest();
             }
             return entry.getIndex();
@@ -822,14 +903,28 @@ public class DLedgerEntryPusher {
     }
 
     enum EntryDispatcherState {
+        /**
+         * 如果Leader节点发生变化，新的Leader节点需要与它的从节点日志条目进行比较，以便截断从节点多余的数据。
+         */
         COMPARE,
+        /**
+         * 如果Leader节点通过索引完成日志对比后，发现从节点存在多余的数据（未提交的数据），则Leader节点将发送 TRUNCATE给它的从节点，
+         * 删除多余的数据，实现主从节点数据一致性。
+         */
         TRUNCATE,
+        /**
+         * 将日志条目追加到从节点。
+         */
         APPEND,
         INSTALL_SNAPSHOT,
+        /**
+         * 通常Leader节点会将提交的索引附加到append请求，如果append请求很少且分散，Leader节点将发送一个单独的请求来通 知从节点提交索引。
+         */
         COMMIT
     }
 
     /**
+     * 从节点收到Leader节点推送的日志并存储，然后向Leader节点汇报日志复制结果。
      * This thread will be activated by the follower.
      * Accept the push request and order it by the index, then append to ledger store one by one.
      */
@@ -978,6 +1073,7 @@ public class DLedgerEntryPusher {
                         return future;
                     }
                     // if the log's term is not preLogTerm, we need to find the first log of this term
+                    // 从endIndex开始，向前追溯targetTerm任期的第一个日志
                     DLedgerEntry firstEntryWithTargetTerm = dLedgerStore.getFirstLogOfTargetTerm(compareTerm, preLogIndex);
                     PreConditions.check(firstEntryWithTargetTerm != null, DLedgerResponseCode.INCONSISTENT_STATE);
                     PushEntryResponse response = buildResponse(request, DLedgerResponseCode.INCONSISTENT_STATE.getCode());

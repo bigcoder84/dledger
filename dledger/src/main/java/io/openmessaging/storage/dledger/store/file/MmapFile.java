@@ -20,6 +20,9 @@ import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 
+/**
+ * 表示一个物理文件
+ */
 public interface MmapFile {
     /**
      * Returns the file name of the {@code MappedFile}.

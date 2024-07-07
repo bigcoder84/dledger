@@ -30,6 +30,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 表示逻辑上连续的多个物理文件
+ */
 public class MmapFileList {
     public static final int MIN_BLANK_LEN = 8;
     public static final int BLANK_MAGIC_CODE = -1;
@@ -228,6 +231,12 @@ public class MmapFileList {
         return preAppend(len, true);
     }
 
+    /**
+     * 日志预写入，主要是根据当前日志的长度计算该条日志的物理偏移量
+     * @param len 需要申请的长度
+     * @param useBlank 是否需要填充
+     * @return
+     */
     public long preAppend(int len, boolean useBlank) {
         MmapFile mappedFile = getLastMappedFile();
         if (null == mappedFile || mappedFile.isFull()) {

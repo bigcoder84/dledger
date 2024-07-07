@@ -1,40 +1,35 @@
 
-## Introduction
+## 介绍
 [![Build Status](https://www.travis-ci.org/openmessaging/dledger.svg?branch=master)](https://www.travis-ci.org/search/dledger) [![Maven Central](https://maven-badges.herokuapp.com/maven-central/io.openmessaging.storage/dledger/badge.svg)](http://search.maven.org/#search%7Cga%7C1%7Copenmessaging-storage-dledger)  [![Coverage Status](https://coveralls.io/repos/github/openmessaging/openmessaging-storage-dledger/badge.svg?branch=master)](https://coveralls.io/github/openmessaging/openmessaging-storage-dledger?branch=master) [![License](https://img.shields.io/badge/license-Apache%202-4EB1BA.svg)](https://www.apache.org/licenses/LICENSE-2.0.html)
 
-A raft-based java library for building high-available, high-durable, strong-consistent commitlog, which could act as the persistent layer for distributed storage system, i.e. messaging, streaming, kv, db, etc.
+一个基于raft的java库，用于构建高可用性、高持久性、强一致性的提交日志，它可以作为分布式存储系统的持久层，例如消息传递、流、kv、db等。
 
-Dledger has added many new features that are not described in the [original paper](https://raft.github.io/raft.pdf). It has been proven to be a true production ready product. 
+Dledger增加了许多在[原始论文]中没有描述的新功能(https:raft.github.ioraft.pdf)。它已被证明是一个真正的生产准备产品。
 
 
-## Features
+## 特性
 
-* Leader election
+* Leader选举
 * Preferred leader election
 * [Pre-vote protocol](https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf)
-* High performance, high reliable storage support
-* Parallel log replication between leader and followers
-* Asynchronous replication
-* State machine
+* 高性能、高可靠的存储支持
+* 领导者和追随者之间的并行日志复制
+* 异步复制
+* 状态机
 * Multi-Raft
 * High tolerance of symmetric network partition
 * High tolerance of asymmetric network partition
 * [Jepsen verification with fault injection](https://github.com/openmessaging/openmessaging-dledger-jepsen)
 
-### New features waiting to be added ###
-* Snapshot (working in progress)
-* Dynamic membership & configuration change
-* SSL/TLS support
+## 快速开始
 
-## Quick Start
-
-### Prerequisite
+### 准备
 
 * 64bit JDK 1.8+
 
 * Maven 3.2.x
 
-### How to Build
+### 如何构建
 
 ```
 mvn clean install -DskipTests
@@ -108,9 +103,24 @@ We always welcome new contributions, whether for trivial cleanups, big new featu
  
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fopenmessaging%2Fopenmessaging-storage-dledger.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fopenmessaging%2Fopenmessaging-storage-dledger?ref=badge_large)
 
+## 源码分析
 
-
-
+- DLedgerConfig：主从切换模块相关的配置信息。
+- MemberState：节点状态机，即Raft协议中Follower、 Candidate、Leader三种状态的状态机实现。
+- DLedgerClientProtocol：DLedger客户端协议，主要定义如下3个方法：
+  - CompletableFuture<GetEntriesResponse> get(GetEntriesRequest request)：客户端从服务器获取日志条目（获取数据）。
+  - CompletableFuture<AppendEntryResponse> append(AppendEntryRequest request)：客户端向服务器追加日志（存储数据）。
+  - CompletableFuture<MetadataResponse> metadata(MetadataRequest request)：获取元数据。
+- DLedgerProtocol：DLedger客户端协议，主要定义如下4个方法：
+  - CompletableFuture<VoteResponse> vote(VoteRequest request)：发起投票请求。 
+  - CompletableFuture<HeartBeatResponse> heartBeat(HeartBeatRequest request)：Leader节点向从节点发送心跳包。 
+  - CompletableFuture<PullEntriesResponse> pull(PullEntriesRequest request)：拉取日志条目。 
+  - CompletableFuture<PushEntryResponse> push(PushEntryRequest request)：推送日志条目，用于日志传播。
+- DLedgerClientProtocolHandler：DLedger客户端协议处理器。
+- DLedgerProtocolHander：DLedger服务端协议处理器。
+- DLedgerRpcService：DLedger节点之前的网络通信，默认基于Netty实现，默认实现类为DLedgerRpcNettyService。
+- DLedgerLeaderElector：基于Raft协议的Leader选举类。（重点，入口：io.openmessaging.storage.dledger.DLedgerLeaderElector.StateMaintainer.doWork#）
+- DLedgerServer：基于Raft协议的集群内节点的封装类。
 
 
 

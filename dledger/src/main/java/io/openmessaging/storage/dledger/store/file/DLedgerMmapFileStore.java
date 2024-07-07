@@ -48,16 +48,28 @@ public class DLedgerMmapFileStore extends DLedgerStore {
 
     private volatile long ledgerBeforeBeginTerm = -1;
 
+    /**
+     * 下一条日志下标（序号）
+     */
     private long ledgerEndIndex = -1;
+    /**
+     * 当前最大的投票轮次
+     */
     private long ledgerEndTerm;
     private final DLedgerConfig dLedgerConfig;
     private final MemberState memberState;
+    /**
+     * 表示逻辑上连续的多个物理文件
+     */
     private final MmapFileList dataFileList;
     private final MmapFileList indexFileList;
     private final ThreadLocal<ByteBuffer> localEntryBuffer;
     private final ThreadLocal<ByteBuffer> localIndexBuffer;
     private final FlushDataService flushDataService;
     private final CleanSpaceService cleanSpaceService;
+    /**
+     * 磁盘是否已满
+     */
     private volatile boolean isDiskFull = false;
 
     private long lastCheckPointTimeMs = System.currentTimeMillis();
@@ -344,36 +356,50 @@ public class DLedgerMmapFileStore extends DLedgerStore {
 
     @Override
     public DLedgerEntry appendAsLeader(DLedgerEntry entry) {
+        // 判断当前节点是否是Leader，如果不是则报错
         PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER);
+        // 判断磁盘是否已满
         PreConditions.check(!isDiskFull, DLedgerResponseCode.DISK_FULL);
+        // 从本地线程变量中获取一个存储数据用的ByteBuffer和一个存储索引用的ByteBuffer。存储数据用的ByteBuffer大小为4MB，存储索引用的ByteBuffer大小为64B。
         ByteBuffer dataBuffer = localEntryBuffer.get();
         ByteBuffer indexBuffer = localIndexBuffer.get();
+        // 对客户端发来的日志进行编码，并将编码后的日志数据写入ByteBuffer中。
         DLedgerEntryCoder.encode(entry, dataBuffer);
         int entrySize = dataBuffer.remaining();
+        // 锁定状态机
         synchronized (memberState) {
+            // 再一次判断是否是Leader节点
             PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER, null);
             PreConditions.check(memberState.getTransferee() == null, DLedgerResponseCode.LEADER_TRANSFERRING, null);
+            // 为当前日志条目设置序号、投票轮次等信息
             long nextIndex = ledgerEndIndex + 1;
             entry.setIndex(nextIndex);
             entry.setTerm(memberState.currTerm());
+            // 将当前日志（包括序号、投票轮次等）写入索引ByteBuffer中。
             DLedgerEntryCoder.setIndexTerm(dataBuffer, nextIndex, memberState.currTerm(), entry.getMagic());
+            // 计算消息的起始物理偏移量，与CommitLog文件的物理偏移量设计思想相同
             long prePos = dataFileList.preAppend(dataBuffer.remaining());
             entry.setPos(prePos);
             PreConditions.check(prePos != -1, DLedgerResponseCode.DISK_ERROR, null);
+            // 将该偏移量写入数据ByteBuffer中
             DLedgerEntryCoder.setPos(dataBuffer, prePos);
             for (AppendHook writeHook : appendHooks) {
                 writeHook.doHook(entry, dataBuffer.slice(), DLedgerEntry.BODY_OFFSET);
             }
+            // 调用DataFileList的append方法，将日志追加到PageCache中，此时数据还没有刷写到硬盘中。
             long dataPos = dataFileList.append(dataBuffer.array(), 0, dataBuffer.remaining());
             PreConditions.check(dataPos != -1, DLedgerResponseCode.DISK_ERROR, null);
             PreConditions.check(dataPos == prePos, DLedgerResponseCode.DISK_ERROR, null);
             DLedgerEntryCoder.encodeIndex(dataPos, entrySize, DLedgerEntryType.NORMAL.getMagic(), nextIndex, memberState.currTerm(), indexBuffer);
+            // 将索引的ByteBuffer写入PageCache中
             long indexPos = indexFileList.append(indexBuffer.array(), 0, indexBuffer.remaining(), false);
             PreConditions.check(indexPos == entry.getIndex() * INDEX_UNIT_SIZE, DLedgerResponseCode.DISK_ERROR, null);
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.info("[{}] Append as Leader {} {}", memberState.getSelfId(), entry.getIndex(), entry.getBody().length);
             }
+            // 日志序号+1
             ledgerEndIndex++;
+            // 记录当前最大的投票轮次
             ledgerEndTerm = memberState.currTerm();
             updateLedgerEndIndexAndTerm();
             return entry;
