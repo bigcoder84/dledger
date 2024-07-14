@@ -65,16 +65,30 @@ public abstract class DLedgerStore {
      */
     public abstract long getLedgerEndIndex();
 
+    /**
+     * 获取当前节点日志开始的日志序号
+     * @return
+     */
     public abstract long getLedgerBeforeBeginIndex();
 
+    /**
+     * 获取当前节点日志开始的投票轮次
+     * @return
+     */
     public abstract long getLedgerBeforeBeginTerm();
 
+    /**
+     * 更新Leader 节点维护的ledgerEndIndex和ledgerEndTerm
+     */
     protected void updateLedgerEndIndexAndTerm() {
         if (getMemberState() != null) {
             getMemberState().updateLedgerIndexAndTerm(getLedgerEndIndex(), getLedgerEndTerm());
         }
     }
 
+    /**
+     * 刷盘
+     */
     public abstract void flush();
 
     /**
@@ -89,6 +103,7 @@ public abstract class DLedgerStore {
     }
 
     /**
+     * 删除日志
      * truncate all entries in [truncateIndex ..]
      * @param truncateIndex truncate process since where
      * @return after truncate, store's end index
@@ -115,8 +130,14 @@ public abstract class DLedgerStore {
      */
     public abstract DLedgerEntry getFirstLogOfTargetTerm(long targetTerm, long endIndex);
 
+    /**
+     * 启动存储管理器
+     */
     public abstract void startup();
 
+    /**
+     * 关闭存储管理器
+     */
     public abstract void shutdown();
 
 }

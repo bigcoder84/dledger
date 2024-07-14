@@ -44,8 +44,14 @@ public class DLedgerMmapFileStore extends DLedgerStore {
     private static final Logger LOGGER = LoggerFactory.getLogger(DLedgerMmapFileStore.class);
     public List<AppendHook> appendHooks = new ArrayList<>();
 
+    /**
+     * 日志的起始序号
+     */
     private volatile long ledgerBeforeBeginIndex = -1;
 
+    /**
+     * 日志起始的投票轮次
+     */
     private volatile long ledgerBeforeBeginTerm = -1;
 
     /**

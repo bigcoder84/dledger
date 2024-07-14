@@ -90,6 +90,7 @@ public class DLedgerEntryPusher {
 
     /**
      * 每个节点基于投票轮次的当前水位线标记。
+     * 用于记录从节点已复制的日志序号
      */
     private final Map<Long/*term*/, ConcurrentMap<String/*peer id*/, Long/*match index*/>> peerWaterMarksByTerm = new ConcurrentHashMap<>();
 
@@ -581,8 +582,16 @@ public class DLedgerEntryPusher {
             }
         }
 
+        /**
+         * Leader节点在向 从节点转发日志后，会存储该日志的推送时间戳到pendingMap，
+         * 当pendingMap的积压超过1000ms时会触发重推机制，该 逻辑封装在doCheckAppendResponse()方法中
+         * @throws Exception
+         */
         private void doCheckAppendResponse() throws Exception {
+            // 获取从节点已复制的日志序号
             long peerWaterMark = getPeerWaterMark(term, peerId);
+            // 尝试获取从节点已复制序号+1的记录，如果能找到，说明从服务下一条需要追加的消息已经存储在主节点中，
+            // 接着在尝试推送，如果该条推送已经超时，默认超时时间 为1s，调用doAppendInner重新推送
             Pair<Long, Integer> pair = pendingMap.get(peerWaterMark + 1);
             if (pair == null)
                 return;
@@ -734,7 +743,7 @@ public class DLedgerEntryPusher {
                 if (type.get() != EntryDispatcherState.APPEND) {
                     break;
                 }
-                // check if first append request is timeout now
+                // 检查从节点未接收的第一个apend请求是否超时，如果超时，则重推
                 doCheckAppendResponse();
                 // check if now not new entries to be sent
                 if (writeIndex > dLedgerStore.getLedgerEndIndex()) {
@@ -930,9 +939,18 @@ public class DLedgerEntryPusher {
      */
     private class EntryHandler extends ShutdownAbleThread {
 
+        /**
+         * 上一次检查主服务器是否有推送消息的时间戳。
+         */
         private long lastCheckFastForwardTimeMs = System.currentTimeMillis();
 
+        /**
+         * append请求处理队列。
+         */
         ConcurrentMap<Long/*index*/, Pair<PushEntryRequest/*request*/, CompletableFuture<PushEntryResponse/*complete future*/>>> writeRequestMap = new ConcurrentHashMap<>();
+        /**
+         * COMMIT、COMPARE、TRUNCATE相关请求的处理队列。
+         */
         BlockingQueue<Pair<PushEntryRequest, CompletableFuture<PushEntryResponse>>>
             compareOrTruncateRequests = new ArrayBlockingQueue<>(1024);
 
@@ -981,14 +999,17 @@ public class DLedgerEntryPusher {
                 case APPEND:
                     PreConditions.check(request.getCount() > 0, DLedgerResponseCode.UNEXPECTED_ARGUMENT);
                     long index = request.getFirstEntryIndex();
+                    // 将请求放入队列中，由doWork方法异步处理
                     Pair<PushEntryRequest, CompletableFuture<PushEntryResponse>> old = writeRequestMap.putIfAbsent(index, new Pair<>(request, future));
                     if (old != null) {
+                        // 表示重复推送
                         logger.warn("[MONITOR]The index {} has already existed with {} and curr is {}", index, old.getKey().baseInfo(), request.baseInfo());
                         future.complete(buildResponse(request, DLedgerResponseCode.REPEATED_PUSH.getCode()));
                     }
                     break;
                 case COMMIT:
                     synchronized (this) {
+                        // 将commit放入请求队列，由doWork方法异步处理
                         if (!compareOrTruncateRequests.offer(new Pair<>(request, future))) {
                             logger.warn("compareOrTruncateRequests blockingQueue is full when put commit request");
                             future.complete(buildResponse(request, DLedgerResponseCode.PUSH_REQUEST_IS_FULL.getCode()));
@@ -997,8 +1018,10 @@ public class DLedgerEntryPusher {
                     break;
                 case COMPARE:
                 case TRUNCATE:
+                    // 如果是compare或truncate请求，则清除append队列中所有的请求
                     writeRequestMap.clear();
                     synchronized (this) {
+                        // 并将 compare或truncate 请求放入队列中，由doWork方法异步处理
                         if (!compareOrTruncateRequests.offer(new Pair<>(request, future))) {
                             logger.warn("compareOrTruncateRequests blockingQueue is full when put compare or truncate request");
                             future.complete(buildResponse(request, DLedgerResponseCode.PUSH_REQUEST_IS_FULL.getCode()));
@@ -1151,6 +1174,10 @@ public class DLedgerEntryPusher {
             }
         }
 
+        /**
+         *
+         * @param endIndex 从节点当前存储的最大日志序号
+         */
         private void checkAppendFuture(long endIndex) {
             long minFastForwardIndex = Long.MAX_VALUE;
             for (Pair<PushEntryRequest, CompletableFuture<PushEntryResponse>> pair : writeRequestMap.values()) {
@@ -1196,6 +1223,7 @@ public class DLedgerEntryPusher {
         }
 
         /**
+         * 检查追加请求是否丢失
          * The leader does push entries to follower, and record the pushed index. But in the following conditions, the push may get stopped.
          * * If the follower is abnormally shutdown, its ledger end index may be smaller than before. At this time, the leader may push fast-forward entries, and retry all the time.
          * * If the last ack is missed, and no new message is coming in.The leader may retry push the last message, but the follower will ignore it.
@@ -1204,10 +1232,12 @@ public class DLedgerEntryPusher {
          */
         private void checkAbnormalFuture(long endIndex) {
             if (DLedgerUtils.elapsed(lastCheckFastForwardTimeMs) < 1000) {
+                // 上次检查距离现在不足1s，则跳过检查
                 return;
             }
             lastCheckFastForwardTimeMs = System.currentTimeMillis();
             if (writeRequestMap.isEmpty()) {
+                // 当前没有积压的append的请求，可以证明主节点没有推送新的日志，所以不用检查
                 return;
             }
 
@@ -1229,6 +1259,7 @@ public class DLedgerEntryPusher {
         @Override
         public void doWork() {
             try {
+                // 校验是否是Follower节点
                 if (!memberState.isFollower()) {
                     clearCompareOrTruncateRequestsIfNeed();
                     waitForRunning(1);
@@ -1270,7 +1301,9 @@ public class DLedgerEntryPusher {
                 long nextIndex = dLedgerStore.getLedgerEndIndex() + 1;
                 Pair<PushEntryRequest, CompletableFuture<PushEntryResponse>> pair = writeRequestMap.remove(nextIndex);
                 if (pair == null) {
+                    // 检查追加请求是否丢失
                     checkAbnormalFuture(dLedgerStore.getLedgerEndIndex());
+                    // 如果下一个日志索引不在队列中，则证明主节点还没有把这条日志推送过来，此时我们等待
                     waitForRunning(1);
                     return;
                 }

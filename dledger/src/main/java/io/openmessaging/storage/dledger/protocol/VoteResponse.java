@@ -64,9 +64,18 @@ public class VoteResponse extends RequestOrResponse {
     }
 
     public enum ParseResult {
+        /**
+         * 等待超时投票，下次投票票时不增加轮次
+         */
         WAIT_TO_REVOTE,
+        /**
+         * 立即重新投票，下次投票不增加轮次
+         */
         REVOTE_IMMEDIATELY,
         PASSED,
+        /**
+         * 立即进入下一轮投票
+         */
         WAIT_TO_VOTE_NEXT;
     }
 
