@@ -16,20 +16,50 @@
 
 package io.openmessaging.storage.dledger.entry;
 
+/**
+ * DLedger日志存储实例，一个对象代表一个日志条目
+ */
 public class DLedgerEntry {
 
     public final static int POS_OFFSET = 4 + 4 + 8 + 8;
     public final static int HEADER_SIZE = POS_OFFSET + 8 + 4 + 4 + 4;
     public final static int BODY_OFFSET = HEADER_SIZE + 4;
 
+    /**
+     * 魔数
+     */
     private int magic = DLedgerEntryType.NORMAL.getMagic();
+    /**
+     * 条目总长度，包含header（协议头）+body（消息体），占4字节。
+     */
     private int size;
+    /**
+     * 当前条目的日志序号，占8字节。
+     */
     private long index;
+    /**
+     * 条目所属的投票轮次，占8字节。
+     */
     private long term;
+    /**
+     * 条目的物理偏移量，类似CommitLog文件的物理偏移量，占8字节。
+     */
     private long pos; //used to validate data
+    /**
+     * 保留字段，当前版本未使用，占4字节。
+     */
     private int channel; //reserved
+    /**
+     * 当前版本未使用，占4字节。
+     */
     private int chainCrc; //like the block chain, this crc indicates any modification before this entry.
+    /**
+     * 消息体的CRC校验和，用来区分数据是否损坏，占4字节
+     */
     private int bodyCrc; //the crc of the body
+    /**
+     * 消息体的内容。
+     */
     private byte[] body;
 
     public DLedgerEntry() {

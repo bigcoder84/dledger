@@ -353,11 +353,12 @@ public class DLedgerEntryPusher {
                     return;
                 }
 
-                // update peer watermarks of self
+                // 更新当前节点的水位线
                 updatePeerWaterMark(currTerm, memberState.getSelfId(), dLedgerStore.getLedgerEndIndex());
 
                 // calculate the median of watermarks(which we can ensure that more than half of the nodes have been pushed the corresponding entry)
                 // we can also call it quorumIndex
+                // 计算所有节点水位线的中位数，那么理论上比这个中位数小的index来说都已经存储在集群中大多数节点上了。
                 Map<String, Long> peerWaterMarks = peerWaterMarksByTerm.get(currTerm);
                 List<Long> sortedWaterMarks = peerWaterMarks.values()
                     .stream()

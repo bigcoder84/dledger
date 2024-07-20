@@ -291,6 +291,7 @@ public class MemberState {
             return false;
         }
         logger.debug("[MemberState] leader update committed index from {} to {}", this.committedIndex, committedIndex);
+        // 更新已提交的的commitIndex索引位置
         this.committedIndex = committedIndex;
         return true;
     }

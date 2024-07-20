@@ -96,6 +96,9 @@ public class DLedgerServer extends AbstractDLedgerServer {
     private final MemberState memberState;
     private final DLedgerConfig dLedgerConfig;
 
+    /**
+     * 日志存储抽象类，有两个实现，一个是基于内存一个是基于文件，默认使用文件存储(DLedgerMmapFileStore)。
+     */
     private final DLedgerStore dLedgerStore;
     private final DLedgerRpcService dLedgerRpcService;
 
@@ -356,7 +359,9 @@ public class DLedgerServer extends AbstractDLedgerServer {
         DLedgerEntry entry = new DLedgerEntry();
         long totalBytes = 0;
         if (bodies.size() > 1) {
+            // 批量追加日志
             long[] positions = new long[bodies.size()];
+            // 追加多个消息
             for (int i = 0; i < bodies.size(); i++) {
                 totalBytes += bodies.get(i).length;
                 DLedgerEntry dLedgerEntry = new DLedgerEntry();
@@ -367,6 +372,7 @@ public class DLedgerServer extends AbstractDLedgerServer {
             // only wait last entry ack is ok
             future = new BatchAppendFuture<>(positions);
         } else {
+            // 单条追加
             DLedgerEntry dLedgerEntry = new DLedgerEntry();
             totalBytes += bodies.get(0).length;
             dLedgerEntry.setBody(bodies.get(0));
@@ -380,6 +386,7 @@ public class DLedgerServer extends AbstractDLedgerServer {
         finalFuture.handle((r, e) -> {
             if (e == null && r.getCode() == DLedgerResponseCode.SUCCESS.getCode()) {
                 Attributes attributes = DLedgerMetricsManager.newAttributesBuilder().build();
+                // 监控上报
                 DLedgerMetricsManager.appendEntryLatency.record(watch.getTime(TimeUnit.MICROSECONDS), attributes);
                 DLedgerMetricsManager.appendEntryBatchCount.record(bodies.size(), attributes);
                 DLedgerMetricsManager.appendEntryBatchBytes.record(totalBytesFinal, attributes);

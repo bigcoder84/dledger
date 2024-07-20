@@ -392,7 +392,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             for (AppendHook writeHook : appendHooks) {
                 writeHook.doHook(entry, dataBuffer.slice(), DLedgerEntry.BODY_OFFSET);
             }
-            // 调用DataFileList的append方法，将日志追加到PageCache中，此时数据还没有刷写到硬盘中。
+            // 调用DataFileList的append方法，将日志追加到PageCache中，此时数据还没有刷写到硬盘中。操作系统会按照一定时间间隔，将PageCache中的数据刷写到磁盘中。
             long dataPos = dataFileList.append(dataBuffer.array(), 0, dataBuffer.remaining());
             PreConditions.check(dataPos != -1, DLedgerResponseCode.DISK_ERROR, null);
             PreConditions.check(dataPos == prePos, DLedgerResponseCode.DISK_ERROR, null);
@@ -407,6 +407,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             ledgerEndIndex++;
             // 记录当前最大的投票轮次
             ledgerEndTerm = memberState.currTerm();
+            // 更新状态机中的 ledgerEndIndex 和 ledgerEndTerm
             updateLedgerEndIndexAndTerm();
             return entry;
         }

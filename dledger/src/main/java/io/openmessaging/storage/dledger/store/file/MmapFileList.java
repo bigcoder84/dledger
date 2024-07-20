@@ -232,12 +232,15 @@ public class MmapFileList {
     }
 
     /**
-     * 日志预写入，主要是根据当前日志的长度计算该条日志的物理偏移量
+     * 日志预写入，主要是根据当前日志的长度计算该条日志的物理偏移量，该方法主要处理写入动作处于文件末尾的场景。
+     * 因为会存在日志写入时，当前文件容纳不下的情况，如果出现这种情况会新建一个新的文件，并返回新文件的起始位置作为写入位置。
+     *
      * @param len 需要申请的长度
      * @param useBlank 是否需要填充
      * @return
      */
     public long preAppend(int len, boolean useBlank) {
+        // 获取逻辑文件中最后一个物理文件
         MmapFile mappedFile = getLastMappedFile();
         if (null == mappedFile || mappedFile.isFull()) {
             mappedFile = getLastMappedFile(0);
@@ -248,20 +251,28 @@ public class MmapFileList {
         }
         int blank = useBlank ? MIN_BLANK_LEN : 0;
         if (len + blank > mappedFile.getFileSize() - mappedFile.getWrotePosition()) {
+            // 如果当前文件剩余空间已不足以存放一条消息
             if (blank < MIN_BLANK_LEN) {
+                // 如果当前文件剩余的空间少于MIN_BLANK_LEN，将返回-1，表 示存储错误，需要人工干预，正常情况下是不会出现这种情况的，
+                // 因为写入一条消息之前会确保能容纳待写入的消息，并且还需要空余MIN_BLANK_LEN个字节，因为一个独立的物理文件，
+                // 默认会填充文件结尾魔数（BLANK_MAGIC_CODE）。
                 LOGGER.error("Blank {} should ge {}", blank, MIN_BLANK_LEN);
                 return -1;
             } else {
+                // 如果空余空间大于MIN_BLANK_LEN，会首先写入文件结尾魔数（4字节），然后将该文件剩余的字节数写入接下来的4个字节，表示该文件全部用完。
+                // 这样会在后面创建一个新文件，使得当前日志能够写入新的文件中。
                 ByteBuffer byteBuffer = ByteBuffer.allocate(mappedFile.getFileSize() - mappedFile.getWrotePosition());
                 byteBuffer.putInt(BLANK_MAGIC_CODE);
                 byteBuffer.putInt(mappedFile.getFileSize() - mappedFile.getWrotePosition());
                 if (mappedFile.appendMessage(byteBuffer.array())) {
                     //need to set the wrote position
+                    // 将写指针置入文件末尾，这样在下一次调用 getLastMappedFile 方法时就会创建一个新的文件
                     mappedFile.setWrotePosition(mappedFile.getFileSize());
                 } else {
                     LOGGER.error("Append blank error for {}", storePath);
                     return -1;
                 }
+                // 如果文件以写满，这里会创建一个新的文件，
                 mappedFile = getLastMappedFile(0);
                 if (null == mappedFile) {
                     LOGGER.error("Create mapped file for {}", storePath);
@@ -269,8 +280,8 @@ public class MmapFileList {
                 }
             }
         }
+        // 如果当前文件有剩余的空间容纳当前日志，则返回待写入消息的物理起始偏移量
         return mappedFile.getFileFromOffset() + mappedFile.getWrotePosition();
-
     }
 
     public long append(byte[] data, int pos, int len, boolean useBlank) {

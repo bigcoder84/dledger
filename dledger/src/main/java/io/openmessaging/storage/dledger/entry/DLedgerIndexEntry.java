@@ -18,14 +18,25 @@ package io.openmessaging.storage.dledger.entry;
 
 public class DLedgerIndexEntry {
 
+    /**
+     * 魔数
+     */
     private int magic;
-
+    /**
+     * 条目的物理偏移量，类似CommitLog文件的物理偏移量，占8字节
+     */
     private long position;
-
+    /**
+     * 条目长度
+     */
     private int size;
-
+    /**
+     * 当前条目的日志序号，占8字节
+     */
     private long index;
-
+    /**
+     * 条目所属的投票轮次，占8字节
+     */
     private long term;
 
     public int getMagic() {
