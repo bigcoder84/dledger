@@ -466,38 +466,45 @@ public class DLedgerMmapFileStore extends DLedgerStore {
 
     @Override
     public long truncate(long truncateIndex) {
+        // 如果需要删除的index在ledgerEndIndex之后，直接返回ledgerEndIndex，不用继续执行删除流程
         if (truncateIndex > this.ledgerEndIndex) {
             return this.ledgerEndIndex;
         }
+        // 获取truncateIndex所对应的日志
         DLedgerEntry firstTruncateEntry = this.get(truncateIndex);
+        // 获取物理偏移量
         long truncateStartPos = firstTruncateEntry.getPos();
         synchronized (this.memberState) {
+            // 加锁后再次比较，如果需要删除的index在ledgerEndIndex之后，直接返回ledgerEndIndex，不用继续执行删除流程
             if (truncateIndex > this.ledgerEndIndex) {
                 return this.ledgerEndIndex;
             }
-            // truncate data file
+            //从物理文件中删除指定物理偏移量之后的数据
             dataFileList.truncateOffset(truncateStartPos);
             if (dataFileList.getMaxWrotePosition() != truncateStartPos) {
                 LOGGER.warn("[TRUNCATE] truncate for data file error, try to truncate pos: {}, but after truncate, max wrote pos: {}, now try to rebuild", truncateStartPos, dataFileList.getMaxWrotePosition());
                 PreConditions.check(dataFileList.rebuildWithPos(truncateStartPos), DLedgerResponseCode.DISK_ERROR, "rebuild data file truncatePos=%d", truncateStartPos);
             }
+            // 重置数据文件的写指针
             reviseDataFileListFlushedWhere(truncateStartPos);
 
-            // truncate index file
+            // 删除索引文件对应的数据
             long truncateIndexFilePos = truncateIndex * INDEX_UNIT_SIZE;
             indexFileList.truncateOffset(truncateIndexFilePos);
             if (indexFileList.getMaxWrotePosition() != truncateIndexFilePos) {
                 LOGGER.warn("[TRUNCATE] truncate for index file error, try to truncate pos: {}, but after truncate, max wrote pos: {}, now try to rebuild", truncateIndexFilePos, indexFileList.getMaxWrotePosition());
                 PreConditions.check(dataFileList.rebuildWithPos(truncateStartPos), DLedgerResponseCode.DISK_ERROR, "rebuild index file truncatePos=%d", truncateIndexFilePos);
             }
+            // 重置索引文件的写指针
             reviseIndexFileListFlushedWhere(truncateIndexFilePos);
 
             // update store end index and its term
             if (truncateIndex == 0) {
-                // now clear all entries
+                // truncateIndex == 0 代表清除所有数据
                 ledgerEndTerm = -1;
                 ledgerEndIndex = -1;
             } else {
+                // 删除后更新 ledgerEndTerm、ledgerEndIndex
                 SelectMmapBufferResult endIndexBuf = indexFileList.getData((truncateIndex - 1) * INDEX_UNIT_SIZE, INDEX_UNIT_SIZE);
                 ByteBuffer buffer = endIndexBuf.getByteBuffer();
                 DLedgerIndexEntry indexEntry = DLedgerEntryCoder.decodeIndex(buffer);

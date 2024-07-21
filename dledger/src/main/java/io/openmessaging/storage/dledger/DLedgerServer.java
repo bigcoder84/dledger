@@ -199,7 +199,9 @@ public class DLedgerServer extends AbstractDLedgerServer {
             if (RpcServiceMode.EXCLUSIVE.equals(this.rpcServiceMode)) {
                 this.dLedgerRpcService.startup();
             }
+            // 启动日志复制功能
             this.dLedgerEntryPusher.startup();
+            // 启动Leader选举功能
             this.dLedgerLeaderElector.startup();
             executorService.scheduleAtFixedRate(this::checkPreferredLeader, 1000, 1000, TimeUnit.MILLISECONDS);
             isStarted = true;
@@ -347,6 +349,15 @@ public class DLedgerServer extends AbstractDLedgerServer {
         return this.appendAsLeader(Arrays.asList(body));
     }
 
+    /**
+     * 向集群中追加日志，写入主节点的操作是同步的，写完主节点后会返回一个Future，然后由 DLedgerEntryPusher#EntryDispatcher 线程异步将日志推送到从节点，
+     * 当集群中大多数节点接收到该日志后，会调用future的complete方法返回日志追加结果（成功 or 失败），只有当
+     * 集群中的大多数节点收到日志后，也就是收到 Future 返回的结果后才能返回给RocketMQ客户端消息写入成功的结果。
+     *
+     * @param bodies
+     * @return
+     * @throws DLedgerException
+     */
     public AppendFuture<AppendEntryResponse> appendAsLeader(List<byte[]> bodies) throws DLedgerException {
         // 判断当前节点是否是Leader，如果不是则报错
         PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER);
@@ -403,10 +414,13 @@ public class DLedgerServer extends AbstractDLedgerServer {
                 response.setLeaderId(DLedgerServer.this.memberState.getLeaderId());
                 response.setPos(finalResEntry.getPos());
                 response.setCode(status.code.getCode());
+                // 当日志被集群中大多数节点接收后，会回调对应index 对应的 Closure，
+                // 在回调中，会调用 AppendFuture 的 complete 方法，将结果返回给上层，代表日志被集群接收
                 finalFuture.complete(response);
             }
         };
         dLedgerEntryPusher.appendClosure(closure, finalResEntry.getTerm(), finalResEntry.getIndex());
+        // 返回的是一个Future，证明整个方法是异步的
         return finalFuture;
     }
 

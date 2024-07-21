@@ -94,6 +94,11 @@ public class DLedgerEntryPusher {
      */
     private final Map<Long/*term*/, ConcurrentMap<String/*peer id*/, Long/*match index*/>> peerWaterMarksByTerm = new ConcurrentHashMap<>();
 
+    /**
+     * 正在处理的 apend 请求的回调函数。放在这里的index所指向的日志是待确认的日志，也就是说客户端目前正处在阻塞状态，等待从节点接收日志。
+     *
+     * 当日志写入Leader节点后，会异步将日志发送给Follower节点，当集群中大多数节点成功写入该日志后，会回调这里暂存的回调函数，从而返回客户端成功写入的状态。
+     */
     private final Map<Long/*term*/, ConcurrentMap<Long/*index*/, Closure/*upper callback*/>> pendingClosure = new ConcurrentHashMap<>();
 
     /**
@@ -108,9 +113,13 @@ public class DLedgerEntryPusher {
      * 日志请求转发器，负责向从节点转发日志，主节点为每一个从节点构建一个EntryDispatcher，EntryDispatcher是一个线程
      */
     private final Map<String/*peer id*/, EntryDispatcher/*entry dispatcher for each peer*/> dispatcherMap = new HashMap<>();
-
+    /**
+     * 当前节点的ID
+     */
     private final String selfId;
-
+    /**
+     * 通过任务队列修改状态机状态，保证所有修改状态机状态的任务按顺序执行
+     */
     private StateMachineCaller fsmCaller;
 
     public DLedgerEntryPusher(DLedgerConfig dLedgerConfig, MemberState memberState, DLedgerStore dLedgerStore,
@@ -120,6 +129,7 @@ public class DLedgerEntryPusher {
         this.memberState = memberState;
         this.dLedgerStore = dLedgerStore;
         this.dLedgerRpcService = dLedgerRpcService;
+        // 为每一个Follower节点创建一个EntryDispatcher线程，复制向Follower节点推送日志
         for (String peer : memberState.getPeerMap().keySet()) {
             if (!peer.equals(memberState.getSelfId())) {
                 dispatcherMap.put(peer, new EntryDispatcher(peer, LOGGER));
@@ -129,11 +139,17 @@ public class DLedgerEntryPusher {
         this.quorumAckChecker = new QuorumAckChecker(LOGGER);
     }
 
+    /**
+     * 启动日志复制逻辑，当节点为不同身份时，生效的线程并不一样（未生效的线程间隔1ms空转，等待节点身份变化）：
+     * Leader：EntryDispatcher QuorumAckChecker
+     * Follower：EntryHandler
+     */
     public void startup() {
-        // 启动 EntryHandler
+        // 启动 EntryHandler，负责接受Leader节点推送的日志，如果节点不是Follower节点现成也会启动，但是不会执行任何逻辑，直到身份变成Follower节点。
         entryHandler.start();
-        //
+        // 启动 日志追加ACK投票仲裁线程，用于判断日志是否可提交，当前节点为Leader节点时激活
         quorumAckChecker.start();
+        // 启动 日志分发线程，用于向Follower节点推送日志，当前节点为Leader节点时激活
         for (EntryDispatcher dispatcher : dispatcherMap.values()) {
             dispatcher.start();
         }
@@ -502,11 +518,14 @@ public class DLedgerEntryPusher {
             request.setGroup(memberState.getGroup());
             request.setRemoteId(peerId);
             request.setLeaderId(leaderId);
+            // 设置节点ID
             request.setLocalId(memberState.getSelfId());
+            // 设置所处选举轮次
             request.setTerm(term);
             request.setPreLogIndex(preLogIndex);
             request.setPreLogTerm(preLogTerm);
             request.setType(type);
+            // 更新已提交的日志的索引
             request.setCommitIndex(memberState.getCommittedIndex());
             return request;
         }
@@ -585,7 +604,7 @@ public class DLedgerEntryPusher {
 
         /**
          * Leader节点在向 从节点转发日志后，会存储该日志的推送时间戳到pendingMap，
-         * 当pendingMap的积压超过1000ms时会触发重推机制，该 逻辑封装在doCheckAppendResponse()方法中
+         * 当pendingMap的积压超过1000ms时会触发重推机制，该逻辑封装在当前方法中
          * @throws Exception
          */
         private void doCheckAppendResponse() throws Exception {
@@ -657,39 +676,43 @@ public class DLedgerEntryPusher {
         }
 
         /**
-         * First compare the leader store with the follower store, find the match index for the follower, and update write index to [matchIndex + 1]
+         * 该方法用于Leader节点向从节点发送Compare请求，目的是为了找到与从节点的共识点，
+         * 也就是找到从节点未提交的日志Index，从而实现删除从节点未提交的数据。
          *
          * @throws Exception
          */
         private void doCompare() throws Exception {
+            // 注意这里是while(true)，所以需要注意循环退出条件
             while (true) {
                 if (checkNotLeaderAndFreshState()) {
                     break;
                 }
+                // 判断请求类型是否为Compare，如果不是则退出循环
                 if (this.type.get() != EntryDispatcherState.COMPARE) {
                     break;
                 }
+                // ledgerEndIndex== -1 表示Leader中没有存储数据，是一个新的集群，所以无需比较主从是否一致
                 if (dLedgerStore.getLedgerEndIndex() == -1) {
-                    // now not entry in store
-                    // ledgerEndIndex== -1 表示Leader中没有存储数据，是一个新的集群，所以无需比较主从是否一致
                     break;
                 }
 
                 // compare process start from the [nextIndex -1]
                 PushEntryRequest request;
-                // compareIndex代表正在比对的索引下标，对比前一条日志，term 和 index 是否一致
+                // compareIndex 代表正在比对的索引下标，对比前一条日志，term 和 index 是否一致
                 long compareIndex = writeIndex - 1;
                 long compareTerm = -1;
                 if (compareIndex < dLedgerStore.getLedgerBeforeBeginIndex()) {
-                    // need compared entry has been dropped for compaction, just change state to install snapshot
+                    // 需要比较的条目已被压缩删除，只需更改状态即可安装快照
                     changeState(EntryDispatcherState.INSTALL_SNAPSHOT);
                     return;
                 } else if (compareIndex == dLedgerStore.getLedgerBeforeBeginIndex()) {
                     compareTerm = dLedgerStore.getLedgerBeforeBeginTerm();
                     request = buildCompareOrTruncatePushRequest(compareTerm, compareIndex, PushEntryRequest.Type.COMPARE);
                 } else {
+                    // 获取正在比对的日志信息
                     DLedgerEntry entry = dLedgerStore.get(compareIndex);
                     PreConditions.check(entry != null, DLedgerResponseCode.INTERNAL_ERROR, "compareIndex=%d", compareIndex);
+                    // 正在比对的日志所处的选举轮次
                     compareTerm = entry.getTerm();
                     request = buildCompareOrTruncatePushRequest(compareTerm, entry.getIndex(), PushEntryRequest.Type.COMPARE);
                 }
@@ -701,18 +724,19 @@ public class DLedgerEntryPusher {
 
                 // fast backup algorithm to locate the match index
                 if (response.getCode() == DLedgerResponseCode.SUCCESS.getCode()) {
-                    // leader find the matched index for this follower
+                    // 证明找到了与Follower节点的共识点
                     matchIndex = compareIndex;
+                    // 此时更新这个Follower节点的水位线
                     updatePeerWaterMark(compareTerm, peerId, matchIndex);
-                    // change state to truncate
+                    // 将发送模式改成truncate，以将从节点的未提交的日志删除
                     changeState(EntryDispatcherState.TRUNCATE);
                     return;
                 }
 
-                // inconsistent state, need to keep comparing
+                // 证明在compareIndex日志上，Follower与当前Leader所处选举轮次并不一致，证明从节点这条日志是需要被删除，然后才会将主节点已提交的日志再次同步到follower上
                 if (response.getXTerm() != -1) {
-                    // response.getXTerm() != -1 代表从节点上的 leaderEndIndex 比当前对比的index大，但是当前对比index 所处的任期和Leader节点不一致，
-                    // 此时 response.getXIndex() 返回的是当前对比任期在从节点开始的位置
+                    // response.getXTerm() != -1 代表当前对比index 所处的任期和Leader节点不一致，
+                    // 此时 response.getXIndex() 返回的是当前对比任期在从节点结束的位置，所以将指针移到从节点在当前轮次的结束处，再次进行对比。
                     writeIndex = response.getXIndex();
                 } else {
                     // response.getXTerm() == -1 代表从节点上的 leaderEndIndex 比当前对比的index小，
@@ -722,17 +746,26 @@ public class DLedgerEntryPusher {
             }
         }
 
-        private void doTruncate() throws Exception {
+        /**
+         * 发起truncate请求，用于删除Follower节点未提交的日志
+         * @throws Exception
+         */
+        private void doTrun那几款交换空间开户行金卡合计科技科技科技科技好卡很积极科技科科技合计合计合计哈哈借记卡，           cate() throws Exception {
+            // 检测当前状态是否为Truncate
             PreConditions.check(type.get() == EntryDispatcherState.TRUNCATE, DLedgerResponseCode.UNKNOWN);
-            // truncate all entries after truncateIndex for follower
+            // 删除共识点以后得所有日志，truncateIndex代表删除的起始位置
             long truncateIndex = matchIndex + 1;
             logger.info("[Push-{}]Will push data to truncate truncateIndex={}", peerId, truncateIndex);
+            // 构建truncate请求
             PushEntryRequest truncateRequest = buildCompareOrTruncatePushRequest(-1, truncateIndex, PushEntryRequest.Type.TRUNCATE);
+            // 发送请求，等待Follower响应
             PushEntryResponse truncateResponse = dLedgerRpcService.push(truncateRequest).get(3, TimeUnit.SECONDS);
 
             PreConditions.check(truncateResponse != null, DLedgerResponseCode.UNKNOWN, "truncateIndex=%d", truncateIndex);
             PreConditions.check(truncateResponse.getCode() == DLedgerResponseCode.SUCCESS.getCode(), DLedgerResponseCode.valueOf(truncateResponse.getCode()), "truncateIndex=%d", truncateIndex);
+            // 更新 lastPushCommitTimeMs 时间
             lastPushCommitTimeMs = System.currentTimeMillis();
+            // 将状态改为Append，Follower节点的多余日志删除完成后，就需要Leader节点同步数据给Follower了
             changeState(EntryDispatcherState.APPEND);
         }
 
@@ -741,10 +774,11 @@ public class DLedgerEntryPusher {
                 if (checkNotLeaderAndFreshState()) {
                     break;
                 }
+                // 校验当前状态是否是Append，如果不是则退出循环
                 if (type.get() != EntryDispatcherState.APPEND) {
                     break;
                 }
-                // 检查从节点未接收的第一个apend请求是否超时，如果超时，则重推
+                // 检查从节点未接收的第一个append请求是否超时，如果超时，则重推
                 doCheckAppendResponse();
                 // check if now not new entries to be sent
                 if (writeIndex > dLedgerStore.getLedgerEndIndex()) {
@@ -1068,45 +1102,54 @@ public class DLedgerEntryPusher {
             }
         }
 
+        /**
+         * Follower端处理Leader端发起的Compare请求
+         *
+         * @param request
+         * @param future
+         * @return
+         */
         private CompletableFuture<PushEntryResponse> handleDoCompare(PushEntryRequest request,
             CompletableFuture<PushEntryResponse> future) {
             try {
                 PreConditions.check(request.getType() == PushEntryRequest.Type.COMPARE, DLedgerResponseCode.UNKNOWN);
-                // fast backup algorithm
+                // Leader端发来需要对比的日志索引值
                 long preLogIndex = request.getPreLogIndex();
+                // Leader端Index日志所处的任期
                 long preLogTerm = request.getPreLogTerm();
                 if (preLogTerm == -1 && preLogIndex == -1) {
-                    // leader's entries is empty
+                    // leader节点日志为空，则直接返回
                     future.complete(buildResponse(request, DLedgerResponseCode.SUCCESS.getCode()));
                     return future;
                 }
                 if (dLedgerStore.getLedgerEndIndex() >= preLogIndex) {
                     long compareTerm = 0;
+                    // 找到指定Index在当前节点的日志中的任期
                     if (dLedgerStore.getLedgerBeforeBeginIndex() == preLogIndex) {
-                        // the preLogIndex is smaller than the smallest index of the ledger, so just compare the snapshot last included term
+                        // 如果查找的Index刚好是当前节点存储的第一条日志，则不用读取磁盘获取日志任期
                         compareTerm = dLedgerStore.getLedgerBeforeBeginTerm();
                     } else {
-                        // there exist a log whose index is preLogIndex
+                        // 从磁盘中读取日志内容，然后获取到日志任期
                         DLedgerEntry local = dLedgerStore.get(preLogIndex);
                         compareTerm = local.getTerm();
                     }
                     if (compareTerm == preLogTerm) {
-                        // the log's term is preLogTerm
-                        // all matched!
+                        // 如果任期相同，则认为Follower节点的日志和Leader节点是相同的，也就证明找到了共识点
                         future.complete(buildResponse(request, DLedgerResponseCode.SUCCESS.getCode()));
                         return future;
                     }
-                    // if the log's term is not preLogTerm, we need to find the first log of this term
-                    // 从endIndex开始，向前追溯targetTerm任期的第一个日志
+                    // 如果任期不相同，则从preLogIndex开始，向前追溯compareTerm任期的第一个日志
                     DLedgerEntry firstEntryWithTargetTerm = dLedgerStore.getFirstLogOfTargetTerm(compareTerm, preLogIndex);
                     PreConditions.check(firstEntryWithTargetTerm != null, DLedgerResponseCode.INCONSISTENT_STATE);
                     PushEntryResponse response = buildResponse(request, DLedgerResponseCode.INCONSISTENT_STATE.getCode());
+                    // 设置Leader节点对比的Index在当前节点所处的任期
                     response.setXTerm(compareTerm);
+                    // 设置Leader节点对比任期，在当前节点最大的index值
                     response.setXIndex(firstEntryWithTargetTerm.getIndex());
                     future.complete(response);
                     return future;
                 }
-                // if there doesn't exist entry in preLogIndex, we return last entry index
+                // dLedgerStore.getLedgerEndIndex() < preLogIndex，代表Leader想要对比的日志在当前节点不存咋，则返回当前节点的endIndex
                 PushEntryResponse response = buildResponse(request, DLedgerResponseCode.INCONSISTENT_STATE.getCode());
                 response.setEndIndex(dLedgerStore.getLedgerEndIndex());
                 future.complete(response);
@@ -1134,16 +1177,28 @@ public class DLedgerEntryPusher {
             return future;
         }
 
+        /**
+         * 该方法时Follower节点收到Leader节点的Truncate请求所执行的方法
+         * @param truncateIndex
+         * @param request
+         * @param future
+         * @return
+         */
         private CompletableFuture<PushEntryResponse> handleDoTruncate(long truncateIndex, PushEntryRequest request,
             CompletableFuture<PushEntryResponse> future) {
             try {
                 logger.info("[HandleDoTruncate] truncateIndex={}", truncateIndex);
                 PreConditions.check(request.getType() == PushEntryRequest.Type.TRUNCATE, DLedgerResponseCode.UNKNOWN);
+                // 删除truncateIndex之后的日志
                 long index = dLedgerStore.truncate(truncateIndex);
                 PreConditions.check(index == truncateIndex - 1, DLedgerResponseCode.INCONSISTENT_STATE);
+                // 删除成功，则返回成功
                 future.complete(buildResponse(request, DLedgerResponseCode.SUCCESS.getCode()));
+                // 更新本地的已提交索引，如果Leader已提交索引大于本地的最大索引，则证明本地的所有日志都处于已提交状态，反之则更新已提交索引为Leader的已提交索引
                 long committedIndex = request.getCommitIndex() <= dLedgerStore.getLedgerEndIndex() ? request.getCommitIndex() : dLedgerStore.getLedgerEndIndex();
+                // 更新状态机中的已提交索引
                 if (DLedgerEntryPusher.this.memberState.followerUpdateCommittedIndex(committedIndex)) {
+                    // todo 该方法待定
                     DLedgerEntryPusher.this.fsmCaller.onCommitted(committedIndex);
                 }
             } catch (Throwable t) {
