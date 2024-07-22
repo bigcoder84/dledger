@@ -750,7 +750,7 @@ public class DLedgerEntryPusher {
          * 发起truncate请求，用于删除Follower节点未提交的日志
          * @throws Exception
          */
-        private void doTrun那几款交换空间开户行金卡合计科技科技科技科技好卡很积极科技科科技合计合计合计哈哈借记卡，           cate() throws Exception {
+        private void doTruncate() throws Exception {
             // 检测当前状态是否为Truncate
             PreConditions.check(type.get() == EntryDispatcherState.TRUNCATE, DLedgerResponseCode.UNKNOWN);
             // 删除共识点以后得所有日志，truncateIndex代表删除的起始位置
