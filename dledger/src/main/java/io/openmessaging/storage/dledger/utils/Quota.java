@@ -18,11 +18,22 @@ package io.openmessaging.storage.dledger.utils;
 
 public class Quota {
 
+    /**
+     * 在指定时间窗口内允许的最大日志条目数量。
+     */
     private final int max;
 
+    /**
+     * 一个数组，用于存储每个时间窗口的日志条目数量。
+     */
     private final int[] samples;
+    /**
+     * 一个数组，记录每个时间窗口的开始时间（秒）。
+     */
     private final long[] timeVec;
-
+    /**
+     * 窗口数量
+     */
     private final int window;
 
     public Quota(int max) {
@@ -46,6 +57,10 @@ public class Quota {
         return currTimeMs / 1000;
     }
 
+    /**
+     * 记录当前时间窗口的日志条目数量。如果当前时间窗口是新的（即timeVec中的记录不是当前秒），则重置该窗口的计数；如果是同一时间窗口，则累加日志条目数量
+     * @param value
+     */
     public void sample(int value) {
         long timeMs = System.currentTimeMillis();
         int index = index(timeMs);

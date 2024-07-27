@@ -196,7 +196,9 @@ public class StateMachineCaller extends ShutdownAbleThread {
         DLedgerMetricsManager.applyTaskLatency.record(watch.getTime(TimeUnit.MICROSECONDS), attributes);
         final long lastIndex = iter.getIndex();
         DLedgerMetricsManager.applyTaskBatchCount.record(lastIndex - lastAppliedIndex, attributes);
+        // 获取日志条目
         DLedgerEntry entry = this.dLedgerStore.get(lastIndex);
+
         this.memberState.updateAppliedIndexAndTerm(lastIndex, entry.getTerm());
         // Take snapshot
         snapshotManager.ifPresent(x -> x.saveSnapshot());
