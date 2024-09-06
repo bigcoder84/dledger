@@ -129,7 +129,7 @@ public class DLedgerEntryPusher {
         this.memberState = memberState;
         this.dLedgerStore = dLedgerStore;
         this.dLedgerRpcService = dLedgerRpcService;
-        // 为每一个Follower节点创建一个EntryDispatcher线程，复制向Follower节点推送日志
+        // 为每一个Follower节点创建一个EntryDispatcher线程，负责向Follower节点推送日志
         for (String peer : memberState.getPeerMap().keySet()) {
             if (!peer.equals(memberState.getSelfId())) {
                 dispatcherMap.put(peer, new EntryDispatcher(peer, LOGGER));
@@ -438,7 +438,10 @@ public class DLedgerEntryPusher {
     private class EntryDispatcher extends ShutdownAbleThread {
 
         /**
-         * 向从节点发送命令的类型
+         * 可以理解为当前线程的工作模式。
+         * COMPARE: 寻找日志的共识点（找到从节点与主节点日志状态一致的最大索引下标）
+         * TRUNCATE：删除从节点未和主节点达成共识的日志记录
+         * APPEND：将主节点日志发送给从节点
          */
         private final AtomicReference<EntryDispatcherState> type = new AtomicReference<>(EntryDispatcherState.COMPARE);
         /**
@@ -451,7 +454,9 @@ public class DLedgerEntryPusher {
         private final String peerId;
 
         /**
-         * 已写入的日志序号
+         * 从节点已写入的日志序号，当前节点升级为 Leader 时初始值设置为 DLedgerEntryPusher.this.dLedgerStore.getLedgerEndIndex() + 1，
+         * 代表将从当前主节点日志已写入最大的Index向前与从节点对比，找到从节点与主节点状态一致的Index，然后线程模式转换为Append，从找到的writeIndex
+         * 位置向从节点发送日志。
          */
         private long writeIndex = DLedgerEntryPusher.this.dLedgerStore.getLedgerEndIndex() + 1;
 
@@ -1001,7 +1006,8 @@ public class DLedgerEntryPusher {
 
     enum EntryDispatcherState {
         /**
-         * 如果Leader节点发生变化，新的Leader节点需要与它的从节点日志条目进行比较，以便截断从节点多余的数据。
+         * 如果Leader节点发生变化，新的Leader节点需要与它的从节点日志条目进行比较，以便截断从节点多余的数据。在这个模式下线程用来寻找Leader节点
+         * 和Follower节点最大的共识Index，找到这个共识点后，就会转换为TRUNCATE模式
          */
         COMPARE,
         /**

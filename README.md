@@ -104,7 +104,6 @@ We always welcome new contributions, whether for trivial cleanups, big new featu
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fopenmessaging%2Fopenmessaging-storage-dledger.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fopenmessaging%2Fopenmessaging-storage-dledger?ref=badge_large)
 
 ## 源码分析
-
 - DLedgerConfig：主从切换模块相关的配置信息。
 - MemberState：节点状态机，即Raft协议中Follower、 Candidate、Leader三种状态的状态机实现。
 - DLedgerClientProtocol：DLedger客户端协议，主要定义如下3个方法：
@@ -121,6 +120,10 @@ We always welcome new contributions, whether for trivial cleanups, big new featu
 - DLedgerRpcService：DLedger节点之前的网络通信，默认基于Netty实现，默认实现类为DLedgerRpcNettyService。
 - DLedgerLeaderElector：基于Raft协议的Leader选举类。（重点，入口：io.openmessaging.storage.dledger.DLedgerLeaderElector.StateMaintainer.doWork#）
 - DLedgerServer：基于Raft协议的集群内节点的封装类。
+- DLedgerEntryPusher：基于Raft协议的日志复制实现类。
+  - EntryDispatcher：Leader节点用于向Follower节点主动同步数据的线程实现，对于一个Raft集群，有多少个Follower节点，在Leader节点中就会有多少个EntryDispatcher线程，每一个线程专门负责向一个Follower节点同步数据。
+  - EntryHandler：Follower节点用于处理Leader节点发起的日志复制请求。
+
 
 
 
