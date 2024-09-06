@@ -21,6 +21,27 @@ Dledger增加了许多在[原始论文]中没有描述的新功能(https:raft.gi
 * High tolerance of asymmetric network partition
 * [Jepsen verification with fault injection](https://github.com/openmessaging/openmessaging-dledger-jepsen)
 
+## 源码分析
+- DLedgerConfig：主从切换模块相关的配置信息。
+- MemberState：节点状态机，即Raft协议中Follower、 Candidate、Leader三种状态的状态机实现。
+- DLedgerClientProtocol：DLedger客户端协议，主要定义如下3个方法：
+  - CompletableFuture<GetEntriesResponse> get(GetEntriesRequest request)：客户端从服务器获取日志条目（获取数据）。
+  - CompletableFuture<AppendEntryResponse> append(AppendEntryRequest request)：客户端向服务器追加日志（存储数据）。
+  - CompletableFuture<MetadataResponse> metadata(MetadataRequest request)：获取元数据。
+- DLedgerProtocol：DLedger客户端协议，主要定义如下4个方法：
+  - CompletableFuture<VoteResponse> vote(VoteRequest request)：发起投票请求。 
+  - CompletableFuture<HeartBeatResponse> heartBeat(HeartBeatRequest request)：Leader节点向从节点发送心跳包。 
+  - CompletableFuture<PullEntriesResponse> pull(PullEntriesRequest request)：拉取日志条目。 
+  - CompletableFuture<PushEntryResponse> push(PushEntryRequest request)：推送日志条目，用于日志传播。
+- DLedgerClientProtocolHandler：DLedger客户端协议处理器。
+- DLedgerProtocolHander：DLedger服务端协议处理器。
+- DLedgerRpcService：DLedger节点之前的网络通信，默认基于Netty实现，默认实现类为DLedgerRpcNettyService。
+- DLedgerLeaderElector：基于Raft协议的Leader选举类。（重点，入口：io.openmessaging.storage.dledger.DLedgerLeaderElector.StateMaintainer.doWork#）
+- DLedgerServer：基于Raft协议的集群内节点的封装类。
+- DLedgerEntryPusher：基于Raft协议的日志复制实现类。
+  - EntryDispatcher：Leader节点用于向Follower节点主动同步数据的线程实现，对于一个Raft集群，有多少个Follower节点，在Leader节点中就会有多少个EntryDispatcher线程，每一个线程专门负责向一个Follower节点同步数据。
+  - EntryHandler：Follower节点用于处理Leader节点发起的日志复制请求。
+
 ## 快速开始
 
 ### 准备
@@ -102,27 +123,6 @@ We always welcome new contributions, whether for trivial cleanups, big new featu
 [Apache License, Version 2.0](https://github.com/openmessaging/openmessaging-storage-dledger/blob/master/LICENSE) Copyright (C) Apache Software Foundation
  
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fopenmessaging%2Fopenmessaging-storage-dledger.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fopenmessaging%2Fopenmessaging-storage-dledger?ref=badge_large)
-
-## 源码分析
-- DLedgerConfig：主从切换模块相关的配置信息。
-- MemberState：节点状态机，即Raft协议中Follower、 Candidate、Leader三种状态的状态机实现。
-- DLedgerClientProtocol：DLedger客户端协议，主要定义如下3个方法：
-  - CompletableFuture<GetEntriesResponse> get(GetEntriesRequest request)：客户端从服务器获取日志条目（获取数据）。
-  - CompletableFuture<AppendEntryResponse> append(AppendEntryRequest request)：客户端向服务器追加日志（存储数据）。
-  - CompletableFuture<MetadataResponse> metadata(MetadataRequest request)：获取元数据。
-- DLedgerProtocol：DLedger客户端协议，主要定义如下4个方法：
-  - CompletableFuture<VoteResponse> vote(VoteRequest request)：发起投票请求。 
-  - CompletableFuture<HeartBeatResponse> heartBeat(HeartBeatRequest request)：Leader节点向从节点发送心跳包。 
-  - CompletableFuture<PullEntriesResponse> pull(PullEntriesRequest request)：拉取日志条目。 
-  - CompletableFuture<PushEntryResponse> push(PushEntryRequest request)：推送日志条目，用于日志传播。
-- DLedgerClientProtocolHandler：DLedger客户端协议处理器。
-- DLedgerProtocolHander：DLedger服务端协议处理器。
-- DLedgerRpcService：DLedger节点之前的网络通信，默认基于Netty实现，默认实现类为DLedgerRpcNettyService。
-- DLedgerLeaderElector：基于Raft协议的Leader选举类。（重点，入口：io.openmessaging.storage.dledger.DLedgerLeaderElector.StateMaintainer.doWork#）
-- DLedgerServer：基于Raft协议的集群内节点的封装类。
-- DLedgerEntryPusher：基于Raft协议的日志复制实现类。
-  - EntryDispatcher：Leader节点用于向Follower节点主动同步数据的线程实现，对于一个Raft集群，有多少个Follower节点，在Leader节点中就会有多少个EntryDispatcher线程，每一个线程专门负责向一个Follower节点同步数据。
-  - EntryHandler：Follower节点用于处理Leader节点发起的日志复制请求。
 
 
 
