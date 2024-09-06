@@ -132,10 +132,12 @@ public class MmapFileList {
             long fileTailOffset = file.getFileFromOffset() + this.mappedFileSize;
             if (fileTailOffset > offset) {
                 if (offset >= file.getFileFromOffset()) {
+                    // 如果要删除的地址偏移值落在了当前文件中，则将当前文件的写指针重置到指定偏移值上
                     file.setWrotePosition((int) (offset % this.mappedFileSize));
                     file.setCommittedPosition((int) (offset % this.mappedFileSize));
                     file.setFlushedPosition((int) (offset % this.mappedFileSize));
                 } else {
+                    // 如果没有落到当前文件上，说明整个文件直接删除即可。
                     willRemoveFiles.add(file);
                 }
             }
